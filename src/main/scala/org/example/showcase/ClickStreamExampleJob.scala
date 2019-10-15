@@ -3,40 +3,46 @@ package org.example.showcase
 import java.util.Properties
 
 import org.apache.flink.api.common.functions.AggregateFunction
-import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.scala._
 import org.apache.flink.configuration.Configuration
+import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction
+import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor
 import org.apache.flink.streaming.api.scala.function.WindowFunction
 import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
-import org.apache.flink.streaming.api.windowing.assigners.ProcessingTimeSessionWindows
+import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows
 import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011
 import org.apache.flink.util.Collector
 import org.example.showcase.clickstream._
-import org.example.util.flink.JsonToCaseClassConverter
 
 object ClickStreamExampleJob extends App {
 
   /** Create environment */
   val env = StreamExecutionEnvironment.getExecutionEnvironment
+  env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
   env.setParallelism(1)
 
   /** Set parameters for connection to Kafka */
   val kafkaConsumerProperties = new Properties()
   kafkaConsumerProperties.setProperty("bootstrap.servers", "localhost:29092")
 
-  /** Get page view stream: read from Kafka, deserialize JSON, extract payload field */
+  /** Stream of page views */
   val pageviews: DataStream[PageView] = env
-    .addSource(
-      new FlinkKafkaConsumer011[String]("pageviews-json", new SimpleStringSchema(), kafkaConsumerProperties)
+    .fromElements(
+      PageView(10, "User1", "PageA"),
+      PageView(11, "User1", "PageA"),
+      PageView(12, "User1", "PageA"),
+      PageView(20, "User2", "PageB"),
+      PageView(40, "User3", "PageA"),
+      PageView(Long.MaxValue, "User3", "PageA")
     )
-    .flatMap(new JsonToCaseClassConverter[PageViewMessage])
-    .map(_.payload)
+    .assignTimestampsAndWatermarks(new AscendingTimestampExtractor[PageView] {
+      override def extractAscendingTimestamp(element: PageView): Long = element.viewtime
+    })
 
-//  pageviews.print()
+  pageviews.print()
 
   /**
     * PATTERN 1: Windows and sessions
@@ -59,7 +65,7 @@ object ClickStreamExampleJob extends App {
 
     /** We choose SessionWindow over Processing time.
       * Alternative: Time/count/custom count window over Event time. */
-    .window(ProcessingTimeSessionWindows.withGap(sessionDelay))
+    .window(EventTimeSessionWindows.withGap(sessionDelay))
 
     /** Aggregation of elements grouped by window consists of two steps:
       * 1. Accumulate elements into one SessionAccumulator
@@ -101,7 +107,7 @@ object ClickStreamExampleJob extends App {
 
     )
 
-//  sessions.print()
+  sessions.print()
 
   /**
     * PATTERN 2: Enrichment
@@ -115,13 +121,16 @@ object ClickStreamExampleJob extends App {
   /** Definition of our result class */
   case class SessionWithRegion(session: Session, region: String)
 
-  /** Stream of user updates from Kafka */
+  /** Stream of user updates */
   val userUpdates: DataStream[UserUpdate] = env
-    .addSource(
-      new FlinkKafkaConsumer011[String]("users-json", new SimpleStringSchema(), kafkaConsumerProperties)
+    .fromElements(
+      UserUpdate(1, "User1", "Russia", "M"),
+      UserUpdate(2, "User2", "China", "F"),
+      UserUpdate(Long.MaxValue, "User2", "China", "F")
     )
-    .flatMap(new JsonToCaseClassConverter[UserUpdateMessage])
-    .map(_.payload)
+    .assignTimestampsAndWatermarks(new AscendingTimestampExtractor[UserUpdate] {
+      override def extractAscendingTimestamp(el: UserUpdate): Long = el.registertime
+    })
 
   /** Enrichment step.
     * We use RichCoFlatMapFunctions for this.
