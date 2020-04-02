@@ -24,10 +24,6 @@ object ClickStreamExampleJob extends App {
   env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
   env.setParallelism(1)
 
-  /** Set parameters for connection to Kafka */
-  val kafkaConsumerProperties = new Properties()
-  kafkaConsumerProperties.setProperty("bootstrap.servers", "localhost:29092")
-
   /** Stream of page views */
   val pageviews: DataStream[PageView] = env
     .fromElements(
@@ -139,7 +135,10 @@ object ClickStreamExampleJob extends App {
   val sessionsWithRegion = sessions
     .connect(userUpdates)
     /** keyBy for each of streams. Expressions must return identical values for the same user */
-    .keyBy(_.user_id, _.userid)
+    .keyBy(
+      x => x.user_id, // sessions
+      y => y.userid   // user_updates
+    )
     .flatMap(new RichCoFlatMapFunction[Session, UserUpdate, SessionWithRegion] {
       private var userRegion: ValueState[String] = _
 
